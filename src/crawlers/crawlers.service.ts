@@ -719,11 +719,17 @@ export class CrawlersService {
     for (const n of res.nodes ?? []) {
       const name = (n.id ?? '').trim();
       if (!name) continue;
-      nodePairs.set(name, n.importance ?? 0);
+      nodePairs.set(name, Number(n.importance ?? 0));
     }
 
     type EdgeKey = string; // `${src}→${dst}`
-    const edgePairs = new Map<EdgeKey, number>();
+    type EdgeVal = {
+      weight: number;
+      sentiment_score: number;
+      sentiment_label: string;
+    };
+
+    const edgePairs = new Map<EdgeKey, EdgeVal>();
     const newsRows: {
       userID: string;
       startPoint: string;
@@ -739,17 +745,21 @@ export class CrawlersService {
       const target = (e.target ?? '').trim();
       if (!source || !target) continue;
 
-      edgePairs.set(`${source}→${target}`, e.weight ?? 0);
+      edgePairs.set(`${source}→${target}`, {
+        weight: Number(e.weight ?? 0),
+        sentiment_score: Number(e.sentiment_score ?? 0),
+        sentiment_label: String(e.sentiment_label ?? 'neutral'),
+      });
 
       for (const a of e.articles ?? []) {
         newsRows.push({
           userID: uid,
           startPoint: source,
           endPoint: target,
-          pubDate: a.pubDate ?? '',
-          link: a.link ?? '',
-          title: a.title ?? '',
-          description: a.description ?? '',
+          pubDate: String(a.pubDate ?? ''),
+          link: String(a.link ?? ''),
+          title: String(a.title ?? ''),
+          description: String(a.description ?? ''),
         });
       }
     }
@@ -759,35 +769,40 @@ export class CrawlersService {
       // 2-1) Node upsert
       for (const [name, weight] of nodePairs.entries()) {
         await tx.node.upsert({
-          where: {
-            // 복합 유니크 입력명은 Prisma가 자동 생성합니다.
-            // 보통 Node_userID_name_key 또는 userID_name 로 잡힙니다.
-            userID_name: { userID: uid, name }, // ← 스키마 기준 자동 생성된 입력명
-          },
+          where: { userID_name: { userID: uid, name } },
           create: { userID: uid, name, weight },
           update: { weight },
         });
       }
 
-      // 2-2) Edge upsert
-      for (const [key, weight] of edgePairs.entries()) {
+      // 2-2) Edge upsert (감성 필드 포함)
+      for (const [key, val] of edgePairs.entries()) {
         const [startPoint, endPoint] = key.split('→');
         await tx.edge.upsert({
           where: {
             userID_startPoint_endPoint: { userID: uid, startPoint, endPoint },
           },
-          create: { userID: uid, startPoint, endPoint, weight },
-          update: { weight },
+          create: {
+            userID: uid,
+            startPoint,
+            endPoint,
+            weight: val.weight,
+            sentiment_score: val.sentiment_score,
+            sentiment_label: val.sentiment_label,
+          },
+          update: {
+            weight: val.weight,
+            sentiment_score: val.sentiment_score,
+            sentiment_label: val.sentiment_label,
+          },
         });
       }
 
-      // 2-3) News 다건 삽입 (중복 허용)
+      // 2-3) News createMany
       if (newsRows.length > 0) {
-        // 너무 많으면 청크로 나눠 안전하게
         const CHUNK = 500;
         for (let i = 0; i < newsRows.length; i += CHUNK) {
-          const slice = newsRows.slice(i, i + CHUNK);
-          await tx.news.createMany({ data: slice });
+          await tx.news.createMany({ data: newsRows.slice(i, i + CHUNK) });
         }
       }
     });

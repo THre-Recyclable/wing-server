@@ -30,11 +30,13 @@ model Node {
 }
 
 model Edge {
-  id         Int    @id @default(autoincrement())
-  userID     String
-  startPoint String
-  endPoint   String
-  weight     Float
+  id              Int    @id @default(autoincrement())
+  userID          String
+  startPoint      String
+  endPoint        String
+  weight          Float
+  sentiment_score Float
+  sentiment_label String
 
   @@unique([userID, startPoint, endPoint])
 }
