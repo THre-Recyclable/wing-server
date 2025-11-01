@@ -798,4 +798,16 @@ export class CrawlersService {
       savedNews: newsRows.length,
     };
   }
+
+  public async clearUserGraph(userID: string) {
+    if (typeof userID !== 'string' || userID.trim().length === 0) {
+      throw new BadRequestException('유효한 userID가 필요합니다.');
+    }
+
+    const [newsDel, edgeDel, nodeDel] = await this.prisma.$transaction([
+      this.prisma.news.deleteMany({ where: { userID } }),
+      this.prisma.edge.deleteMany({ where: { userID } }),
+      this.prisma.node.deleteMany({ where: { userID } }),
+    ]);
+  }
 }
