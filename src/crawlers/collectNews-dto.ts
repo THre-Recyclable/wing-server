@@ -55,5 +55,5 @@ export class CollectNewsDTO {
   @IsInt()
   @Min(1)
   @Max(50)
-  need: number = 3; // 최소 수집할 기사 수
+  need: number = 5; // 최소 수집할 기사 수
 }

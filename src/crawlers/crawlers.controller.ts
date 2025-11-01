@@ -1,6 +1,6 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { CrawlersService } from './crawlers.service';
-import { CollectNewsDTO } from './collectNewsDTO';
+import { CollectNewsDTO } from './collectNews-dto';
 
 @Controller('search')
 export class CrawlersController {
