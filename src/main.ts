@@ -23,6 +23,28 @@ async function bootstrap() {
   const documentFactory = () => SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, documentFactory);
 
+  const whitelist = new Set<string>([
+    'http://localhost:3000',
+    'https://wing-five-phi.vercel.app',
+  ]);
+
+  app.enableCors({
+    origin: (origin, callback) => {
+      // 서버-서버 호출 또는 curl 등 Origin 없는 경우 허용(필요시 정책 수정)
+      if (!origin) return callback(null, true);
+
+      if (whitelist.has(origin)) return callback(null, true);
+
+      // 필요하면 vercel 프리뷰 도메인 전체 허용 예시:
+      // if (origin.endsWith('.vercel.app')) return callback(null, true);
+
+      return callback(new Error(`CORS blocked: ${origin}`), false);
+    },
+    credentials: true, // 쿠키/인증 헤더 쓸 경우
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  });
+
   await app.listen(3000);
   console.log('http://127.0.0.1:3000/search/news?query=검색어');
 }
