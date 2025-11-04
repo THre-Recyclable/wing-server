@@ -64,6 +64,10 @@ export class AuthController {
           type: 'string',
           example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
         },
+        id: {
+          type: 'string',
+          example: 'user1',
+        },
       },
     },
   })

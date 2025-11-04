@@ -44,7 +44,9 @@ export class AuthService {
     return await bcrypt.compare(plainText, hash);
   }
 
-  async login(loginDTO: LoginDTO): Promise<{ accessToken: string }> {
+  async login(
+    loginDTO: LoginDTO,
+  ): Promise<{ accessToken: string; id: string }> {
     const user = await this.prisma.user.findFirst({
       where: {
         id: loginDTO.id,
@@ -71,7 +73,7 @@ export class AuthService {
       { expiresIn: '1d' },
     );
 
-    return { accessToken };
+    return { accessToken, id: user.id };
   }
 
   async getNodes(user: string): Promise<NodeEntity[]> {
