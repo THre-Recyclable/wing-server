@@ -32,7 +32,9 @@
     "cheerio": "^1.1.2",
     "openai": "^6.9.1",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "@prisma/client": "6.2.1",
+    "prisma": "6.2.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
