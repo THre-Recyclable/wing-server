@@ -7,6 +7,8 @@ import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
 import { AuthModule } from './auth/auth.module';
 import { PrismaModule } from './prisma.module';
+import { OpenAiModule } from './openai/openai.module';
+import { KeywordsModule } from './keywords/keywords.module';
 
 @Module({
   imports: [
@@ -18,6 +20,8 @@ import { PrismaModule } from './prisma.module';
     CrawlersModule,
     AuthModule,
     PrismaModule,
+    OpenAiModule,
+    KeywordsModule,
   ],
 })
 export class AppModule {}

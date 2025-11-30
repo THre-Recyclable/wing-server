@@ -46,6 +46,5 @@ async function bootstrap() {
   });
 
   await app.listen(3000);
-  console.log('http://127.0.0.1:3000/search/news?query=검색어');
 }
 bootstrap();

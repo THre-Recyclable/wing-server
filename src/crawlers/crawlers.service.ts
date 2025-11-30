@@ -1,3 +1,4 @@
+//crawlers.service.ts
 import { HttpService } from '@nestjs/axios';
 import {
   Injectable,
@@ -109,9 +110,9 @@ export class CrawlersService {
 
   async collectNaverMnewsLinks(queryInput: string) {
     const query = queryInput,
-      display = 5,
+      display = 100,
       sort = 'sim',
-      need = 5;
+      need = 300;
 
     const targetPrefix = 'https://n.news.naver.com/mnews/';
     const collected: Array<{ link: string; title: string; pubDate: string }> =
@@ -338,6 +339,327 @@ export class CrawlersService {
       ...collected,
       items: enriched,
     };
+  }
+
+  /**
+   * 더미 에이전트 결과를 받아 DB에 저장
+   * - Node: upsert(복합 유니크 userID+name)
+   * - Edge: upsert(복합 유니크 userID+startPoint+endPoint)
+   * - News: createMany(중복 허용)
+   */
+  public async saveGraphForUser(
+    dto: CollectNewsDTO,
+    userID: string,
+  ): Promise<IngestSummary> {
+    const uid = (userID ?? '').trim();
+    if (!uid) throw new BadRequestException('userID is required');
+
+    const newsResult = await this.crawlNewsByKeywords(dto);
+
+    const url = 'http://211.105.112.143:61394/process?mode=investment';
+    const payload =
+      typeof newsResult === 'string' ? newsResult : JSON.stringify(newsResult);
+
+    const aiResp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    });
+
+    if (!aiResp.ok) {
+      const text = await aiResp.text().catch(() => '');
+      throw new BadRequestException(
+        `Remote process failed (${aiResp.status}): ${text || 'no body'}`,
+      );
+    }
+
+    const res: {
+      nodes?: Array<{ id: string; importance?: number }>;
+      edges?: Array<{
+        source: string;
+        target: string;
+        weight?: number;
+        sentiment_score?: number;
+        sentiment_label?: string;
+        articles?: Array<{
+          link?: string;
+          title?: string;
+          pubDate?: string;
+          description?: string;
+        }>;
+      }>;
+    } = (await aiResp.json()) ?? {};
+
+    // 1) Node / Edge / News 변환
+    const nodePairs = new Map<string, number>(); // name -> weight
+    for (const n of res.nodes ?? []) {
+      const name = (n.id ?? '').trim();
+      if (!name) continue;
+      nodePairs.set(name, Number(n.importance ?? 0));
+    }
+
+    type EdgeKey = string; // `${src}→${dst}`
+    type EdgeVal = {
+      weight: number;
+      sentiment_score: number;
+      sentiment_label: string;
+    };
+
+    const edgePairs = new Map<EdgeKey, EdgeVal>();
+    const newsRows: {
+      userID: string;
+      startPoint: string;
+      endPoint: string;
+      pubDate: string;
+      link: string;
+      title: string;
+      description: string;
+    }[] = [];
+
+    for (const e of res.edges ?? []) {
+      const source = (e.source ?? '').trim();
+      const target = (e.target ?? '').trim();
+      if (!source || !target) continue;
+
+      edgePairs.set(`${source}→${target}`, {
+        weight: Number(e.weight ?? 0),
+        sentiment_score: Number(e.sentiment_score ?? 0),
+        sentiment_label: String(e.sentiment_label ?? 'neutral'),
+      });
+
+      for (const a of e.articles ?? []) {
+        newsRows.push({
+          userID: uid,
+          startPoint: source,
+          endPoint: target,
+          pubDate: String(a.pubDate ?? ''),
+          link: String(a.link ?? ''),
+          title: String(a.title ?? ''),
+          description: String(a.description ?? ''),
+        });
+      }
+    }
+
+    // 2) 트랜잭션
+    await this.prisma.$transaction(async (tx) => {
+      // 2-1) Node upsert
+      for (const [name, weight] of nodePairs.entries()) {
+        await tx.node.upsert({
+          where: { userID_name: { userID: uid, name } },
+          create: { userID: uid, name, weight },
+          update: { weight },
+        });
+      }
+
+      // 2-2) Edge upsert (감성 필드 포함)
+      for (const [key, val] of edgePairs.entries()) {
+        const [startPoint, endPoint] = key.split('→');
+        await tx.edge.upsert({
+          where: {
+            userID_startPoint_endPoint: { userID: uid, startPoint, endPoint },
+          },
+          create: {
+            userID: uid,
+            startPoint,
+            endPoint,
+            weight: val.weight,
+            sentiment_score: val.sentiment_score,
+            sentiment_label: val.sentiment_label,
+          },
+          update: {
+            weight: val.weight,
+            sentiment_score: val.sentiment_score,
+            sentiment_label: val.sentiment_label,
+          },
+        });
+      }
+
+      // 2-3) News createMany
+      if (newsRows.length > 0) {
+        const CHUNK = 500;
+        for (let i = 0; i < newsRows.length; i += CHUNK) {
+          await tx.news.createMany({ data: newsRows.slice(i, i + CHUNK) });
+        }
+      }
+    });
+
+    return {
+      savedNodes: nodePairs.size,
+      savedEdges: edgePairs.size,
+      savedNews: newsRows.length,
+    };
+  }
+
+  public async saveGraphForUser_mvp(
+    dto: CollectNewsDTO,
+    userID: string,
+  ): Promise<IngestSummary> {
+    const uid = (userID ?? '').trim();
+    if (!uid) throw new BadRequestException('userID is required');
+
+    // 최종 그래프 응답을 담을 변수
+    let res: {
+      nodes?: Array<{ id: string; importance?: number }>;
+      edges?: Array<{
+        source: string;
+        target: string;
+        weight?: number;
+        // 원격 응답엔 아래 두 필드가 없다고 가정
+        sentiment_score?: number;
+        sentiment_label?: string;
+        articles?: Array<{
+          link?: string;
+          title?: string;
+          pubDate?: string;
+          description?: string;
+        }>;
+      }>;
+    };
+
+    if (uid === 'admin7145') {
+      // 내부 더미
+      res = await this.dummyAgentCall_second();
+    } else {
+      // 1) 키워드로 뉴스 수집
+      const newsResult = await this.crawlNewsByKeywords(dto);
+
+      // 2) 뉴스 결과를 Body로 원격 API에 POST  (래퍼 제거)
+      const url =
+        'https://wing-ai-production.up.railway.app/process?mode=normal';
+
+      // newsResult가 객체인지/이미 JSON 문자열인지에 따라 안전하게 처리
+      const payload =
+        typeof newsResult === 'string'
+          ? newsResult // 이미 JSON 문자열이면 그대로
+          : JSON.stringify(newsResult); // 객체면 직렬화
+
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new BadRequestException(
+          `Remote process failed (${resp.status}): ${text || 'no body'}`,
+        );
+      }
+
+      res = (await resp.json()) ?? {};
+    }
+
+    // 3) Node / Edge / News 변환
+    const nodePairs = new Map<string, number>(); // name -> weight
+    for (const n of res.nodes ?? []) {
+      const name = (n.id ?? '').trim();
+      if (!name) continue;
+      nodePairs.set(name, Number(n.importance ?? 0));
+    }
+
+    type EdgeKey = string; // `${src}→${dst}`
+    type EdgeVal = {
+      weight: number;
+      sentiment_score: number;
+      sentiment_label: string;
+    };
+
+    const edgePairs = new Map<EdgeKey, EdgeVal>();
+    const newsRows: {
+      userID: string;
+      startPoint: string;
+      endPoint: string;
+      pubDate: string;
+      link: string;
+      title: string;
+      description: string;
+    }[] = [];
+
+    for (const e of res.edges ?? []) {
+      const source = (e.source ?? '').trim();
+      const target = (e.target ?? '').trim();
+      if (!source || !target) continue;
+
+      // 요구사항: 응답에 감성 값이 없다면 기본값으로 채움
+      edgePairs.set(`${source}→${target}`, {
+        weight: Number(e.weight ?? 0),
+        sentiment_score: Number(e.sentiment_score ?? 0), // 없으면 0
+        sentiment_label: String(e.sentiment_label ?? 'neutral'), // 없으면 neutral
+      });
+
+      for (const a of e.articles ?? []) {
+        newsRows.push({
+          userID: uid,
+          startPoint: source,
+          endPoint: target,
+          pubDate: String(a.pubDate ?? ''),
+          link: String(a.link ?? ''),
+          title: String(a.title ?? ''),
+          description: String(a.description ?? ''),
+        });
+      }
+    }
+
+    // 4) 트랜잭션 저장
+    await this.prisma.$transaction(async (tx) => {
+      // 4-1) Node upsert
+      for (const [name, weight] of nodePairs.entries()) {
+        await tx.node.upsert({
+          where: { userID_name: { userID: uid, name } },
+          create: { userID: uid, name, weight },
+          update: { weight },
+        });
+      }
+
+      // 4-2) Edge upsert (감성 필드 포함)
+      for (const [key, val] of edgePairs.entries()) {
+        const [startPoint, endPoint] = key.split('→');
+        await tx.edge.upsert({
+          where: {
+            userID_startPoint_endPoint: { userID: uid, startPoint, endPoint },
+          },
+          create: {
+            userID: uid,
+            startPoint,
+            endPoint,
+            weight: val.weight,
+            sentiment_score: val.sentiment_score,
+            sentiment_label: val.sentiment_label,
+          },
+          update: {
+            weight: val.weight,
+            sentiment_score: val.sentiment_score,
+            sentiment_label: val.sentiment_label,
+          },
+        });
+      }
+
+      // 4-3) News createMany
+      if (newsRows.length > 0) {
+        const CHUNK = 500;
+        for (let i = 0; i < newsRows.length; i += CHUNK) {
+          await tx.news.createMany({ data: newsRows.slice(i, i + CHUNK) });
+        }
+      }
+    });
+
+    return {
+      savedNodes: nodePairs.size,
+      savedEdges: edgePairs.size,
+      savedNews: newsRows.length,
+    };
+  }
+
+  public async clearUserGraph(userID: string) {
+    if (typeof userID !== 'string' || userID.trim().length === 0) {
+      throw new BadRequestException('유효한 userID가 필요합니다.');
+    }
+
+    const [newsDel, edgeDel, nodeDel] = await this.prisma.$transaction([
+      this.prisma.news.deleteMany({ where: { userID } }),
+      this.prisma.edge.deleteMany({ where: { userID } }),
+      this.prisma.node.deleteMany({ where: { userID } }),
+    ]);
   }
 
   private async dummyAgentCall(): Promise<{
@@ -1817,292 +2139,5 @@ export class CrawlersService {
         total_edges: 36,
       },
     };
-  }
-
-  /**
-   * 더미 에이전트 결과를 받아 DB에 저장
-   * - Node: upsert(복합 유니크 userID+name)
-   * - Edge: upsert(복합 유니크 userID+startPoint+endPoint)
-   * - News: createMany(중복 허용)
-   */
-  public async saveGraphForUser(
-    dto: CollectNewsDTO,
-    userID: string,
-  ): Promise<IngestSummary> {
-    const uid = (userID ?? '').trim();
-    if (!uid) throw new BadRequestException('userID is required');
-
-    const res = await this.dummyAgentCall();
-
-    // 1) Node / Edge / News 변환
-    const nodePairs = new Map<string, number>(); // name -> weight
-    for (const n of res.nodes ?? []) {
-      const name = (n.id ?? '').trim();
-      if (!name) continue;
-      nodePairs.set(name, Number(n.importance ?? 0));
-    }
-
-    type EdgeKey = string; // `${src}→${dst}`
-    type EdgeVal = {
-      weight: number;
-      sentiment_score: number;
-      sentiment_label: string;
-    };
-
-    const edgePairs = new Map<EdgeKey, EdgeVal>();
-    const newsRows: {
-      userID: string;
-      startPoint: string;
-      endPoint: string;
-      pubDate: string;
-      link: string;
-      title: string;
-      description: string;
-    }[] = [];
-
-    for (const e of res.edges ?? []) {
-      const source = (e.source ?? '').trim();
-      const target = (e.target ?? '').trim();
-      if (!source || !target) continue;
-
-      edgePairs.set(`${source}→${target}`, {
-        weight: Number(e.weight ?? 0),
-        sentiment_score: Number(e.sentiment_score ?? 0),
-        sentiment_label: String(e.sentiment_label ?? 'neutral'),
-      });
-
-      for (const a of e.articles ?? []) {
-        newsRows.push({
-          userID: uid,
-          startPoint: source,
-          endPoint: target,
-          pubDate: String(a.pubDate ?? ''),
-          link: String(a.link ?? ''),
-          title: String(a.title ?? ''),
-          description: String(a.description ?? ''),
-        });
-      }
-    }
-
-    // 2) 트랜잭션
-    await this.prisma.$transaction(async (tx) => {
-      // 2-1) Node upsert
-      for (const [name, weight] of nodePairs.entries()) {
-        await tx.node.upsert({
-          where: { userID_name: { userID: uid, name } },
-          create: { userID: uid, name, weight },
-          update: { weight },
-        });
-      }
-
-      // 2-2) Edge upsert (감성 필드 포함)
-      for (const [key, val] of edgePairs.entries()) {
-        const [startPoint, endPoint] = key.split('→');
-        await tx.edge.upsert({
-          where: {
-            userID_startPoint_endPoint: { userID: uid, startPoint, endPoint },
-          },
-          create: {
-            userID: uid,
-            startPoint,
-            endPoint,
-            weight: val.weight,
-            sentiment_score: val.sentiment_score,
-            sentiment_label: val.sentiment_label,
-          },
-          update: {
-            weight: val.weight,
-            sentiment_score: val.sentiment_score,
-            sentiment_label: val.sentiment_label,
-          },
-        });
-      }
-
-      // 2-3) News createMany
-      if (newsRows.length > 0) {
-        const CHUNK = 500;
-        for (let i = 0; i < newsRows.length; i += CHUNK) {
-          await tx.news.createMany({ data: newsRows.slice(i, i + CHUNK) });
-        }
-      }
-    });
-
-    return {
-      savedNodes: nodePairs.size,
-      savedEdges: edgePairs.size,
-      savedNews: newsRows.length,
-    };
-  }
-
-  public async saveGraphForUser_mvp(
-    dto: CollectNewsDTO,
-    userID: string,
-  ): Promise<IngestSummary> {
-    const uid = (userID ?? '').trim();
-    if (!uid) throw new BadRequestException('userID is required');
-
-    // 최종 그래프 응답을 담을 변수
-    let res: {
-      nodes?: Array<{ id: string; importance?: number }>;
-      edges?: Array<{
-        source: string;
-        target: string;
-        weight?: number;
-        // 원격 응답엔 아래 두 필드가 없다고 가정
-        sentiment_score?: number;
-        sentiment_label?: string;
-        articles?: Array<{
-          link?: string;
-          title?: string;
-          pubDate?: string;
-          description?: string;
-        }>;
-      }>;
-    };
-
-    if (uid === 'admin7145') {
-      // 내부 더미
-      res = await this.dummyAgentCall_second();
-    } else {
-      // 1) 키워드로 뉴스 수집
-      const newsResult = await this.crawlNewsByKeywords(dto);
-
-      // 2) 뉴스 결과를 Body로 원격 API에 POST  (래퍼 제거)
-      const url =
-        'https://wing-ai-production.up.railway.app/process?mode=normal';
-
-      // newsResult가 객체인지/이미 JSON 문자열인지에 따라 안전하게 처리
-      const payload =
-        typeof newsResult === 'string'
-          ? newsResult // 이미 JSON 문자열이면 그대로
-          : JSON.stringify(newsResult); // 객체면 직렬화
-
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-      });
-
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
-        throw new BadRequestException(
-          `Remote process failed (${resp.status}): ${text || 'no body'}`,
-        );
-      }
-
-      res = (await resp.json()) ?? {};
-    }
-
-    // 3) Node / Edge / News 변환
-    const nodePairs = new Map<string, number>(); // name -> weight
-    for (const n of res.nodes ?? []) {
-      const name = (n.id ?? '').trim();
-      if (!name) continue;
-      nodePairs.set(name, Number(n.importance ?? 0));
-    }
-
-    type EdgeKey = string; // `${src}→${dst}`
-    type EdgeVal = {
-      weight: number;
-      sentiment_score: number;
-      sentiment_label: string;
-    };
-
-    const edgePairs = new Map<EdgeKey, EdgeVal>();
-    const newsRows: {
-      userID: string;
-      startPoint: string;
-      endPoint: string;
-      pubDate: string;
-      link: string;
-      title: string;
-      description: string;
-    }[] = [];
-
-    for (const e of res.edges ?? []) {
-      const source = (e.source ?? '').trim();
-      const target = (e.target ?? '').trim();
-      if (!source || !target) continue;
-
-      // 요구사항: 응답에 감성 값이 없다면 기본값으로 채움
-      edgePairs.set(`${source}→${target}`, {
-        weight: Number(e.weight ?? 0),
-        sentiment_score: Number(e.sentiment_score ?? 0), // 없으면 0
-        sentiment_label: String(e.sentiment_label ?? 'neutral'), // 없으면 neutral
-      });
-
-      for (const a of e.articles ?? []) {
-        newsRows.push({
-          userID: uid,
-          startPoint: source,
-          endPoint: target,
-          pubDate: String(a.pubDate ?? ''),
-          link: String(a.link ?? ''),
-          title: String(a.title ?? ''),
-          description: String(a.description ?? ''),
-        });
-      }
-    }
-
-    // 4) 트랜잭션 저장
-    await this.prisma.$transaction(async (tx) => {
-      // 4-1) Node upsert
-      for (const [name, weight] of nodePairs.entries()) {
-        await tx.node.upsert({
-          where: { userID_name: { userID: uid, name } },
-          create: { userID: uid, name, weight },
-          update: { weight },
-        });
-      }
-
-      // 4-2) Edge upsert (감성 필드 포함)
-      for (const [key, val] of edgePairs.entries()) {
-        const [startPoint, endPoint] = key.split('→');
-        await tx.edge.upsert({
-          where: {
-            userID_startPoint_endPoint: { userID: uid, startPoint, endPoint },
-          },
-          create: {
-            userID: uid,
-            startPoint,
-            endPoint,
-            weight: val.weight,
-            sentiment_score: val.sentiment_score,
-            sentiment_label: val.sentiment_label,
-          },
-          update: {
-            weight: val.weight,
-            sentiment_score: val.sentiment_score,
-            sentiment_label: val.sentiment_label,
-          },
-        });
-      }
-
-      // 4-3) News createMany
-      if (newsRows.length > 0) {
-        const CHUNK = 500;
-        for (let i = 0; i < newsRows.length; i += CHUNK) {
-          await tx.news.createMany({ data: newsRows.slice(i, i + CHUNK) });
-        }
-      }
-    });
-
-    return {
-      savedNodes: nodePairs.size,
-      savedEdges: edgePairs.size,
-      savedNews: newsRows.length,
-    };
-  }
-
-  public async clearUserGraph(userID: string) {
-    if (typeof userID !== 'string' || userID.trim().length === 0) {
-      throw new BadRequestException('유효한 userID가 필요합니다.');
-    }
-
-    const [newsDel, edgeDel, nodeDel] = await this.prisma.$transaction([
-      this.prisma.news.deleteMany({ where: { userID } }),
-      this.prisma.edge.deleteMany({ where: { userID } }),
-      this.prisma.node.deleteMany({ where: { userID } }),
-    ]);
   }
 }

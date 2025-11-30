@@ -232,6 +232,6 @@ export class AuthController {
     }
 
     await this.crawlerService.clearUserGraph(id);
-    return this.crawlerService.saveGraphForUser_mvp(dto, id);
+    return this.crawlerService.saveGraphForUser(dto, id);
   }
 }
