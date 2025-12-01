@@ -356,7 +356,7 @@ export class CrawlersService {
 
     const newsResult = await this.crawlNewsByKeywords(dto);
 
-    const url = 'http://211.105.112.143:61394/process?mode=investment';
+    const url = 'http://211.105.112.143:61385/process?mode=investment';
     const payload =
       typeof newsResult === 'string' ? newsResult : JSON.stringify(newsResult);
 
