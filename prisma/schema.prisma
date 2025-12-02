@@ -1,12 +1,5 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
-  //output   = "../generated/prisma"
 }
 
 datasource db {
@@ -14,40 +7,100 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// 메인/서브 키워드 구분용 enum
+enum KeywordType {
+  MAIN
+  SUB
+}
+
 model User {
   id       String @id
   password String
+
+  // 유저 1명이 여러 그래프를 가질 수 있도록
+  graphs Graph[]
 }
 
-model Node {
+// 유저별로 여러 개 가질 수 있는 “그래프” 단위
+model Graph {
   id     Int    @id @default(autoincrement())
   userID String
-  name   String
-  weight Float
+  user   User   @relation(fields: [userID], references: [id], onDelete: Cascade)
 
-  @@unique([userID, name])
+  name      String // 그래프 이름(라벨) 같은 용도
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  nodes Node[]
+  edges Edge[]
+  news  News[]
+
   @@index([userID])
 }
 
+model Node {
+  id Int @id @default(autoincrement())
+
+  // 여전히 편의를 위해 userID는 유지
+  userID String
+
+  // 어느 그래프에 속한 노드인지
+  graphId Int
+  graph   Graph @relation(fields: [graphId], references: [id], onDelete: Cascade)
+
+  name   String
+  weight Float
+
+  // main / sub 키워드 표시
+  kind KeywordType @default(SUB)
+
+  // 이제 그래프 안에서 이름이 유니크
+  @@unique([graphId, name])
+  @@index([userID])
+  @@index([graphId])
+}
+
 model Edge {
-  id              Int    @id @default(autoincrement())
-  userID          String
+  id Int @id @default(autoincrement())
+
+  userID String
+
+  // 어느 그래프에 속한 엣지인지
+  graphId Int
+  graph   Graph @relation(fields: [graphId], references: [id], onDelete: Cascade)
+
   startPoint      String
   endPoint        String
   weight          Float
   sentiment_score Float
   sentiment_label String
 
-  @@unique([userID, startPoint, endPoint])
+  // 추가 필드: 수집 개수 / 전체 추정 개수
+  totalEstimated Int @default(0)
+  collectedCount Int @default(0)
+
+  // 한 그래프 안에서 start/end 쌍 유니크
+  @@unique([graphId, startPoint, endPoint])
+  @@index([userID])
+  @@index([graphId])
 }
 
 model News {
-  id          Int    @id @default(autoincrement())
-  userID      String
+  id Int @id @default(autoincrement())
+
+  userID String
+
+  // 뉴스도 어떤 그래프에 속해 있는지 알 수 있게
+  graphId Int
+  graph   Graph @relation(fields: [graphId], references: [id], onDelete: Cascade)
+
   startPoint  String
   endPoint    String
-  pubDate     String
+  pubDate     DateTime @db.Timestamptz
   link        String
   title       String
   description String
+
+  @@index([userID])
+  @@index([graphId])
 }
