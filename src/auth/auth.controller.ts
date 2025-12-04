@@ -467,4 +467,37 @@ export class AuthController {
 
     return this.crawlerService.deleteGraphForUser(id, graphId);
   }
+
+  @UseGuards(AuthGuard)
+  @ApiBearerAuth()
+  @Get('top-keywords')
+  @ApiOperation({
+    summary: '전체 그래프에서 가장 많이 등장한 키워드 Top 5를 반환합니다.',
+    description:
+      'Node 테이블에서 name별 등장 횟수를 집계하여 상위 5개 키워드를 제공합니다.',
+  })
+  @ApiOkResponse({
+    description: '가장 많이 등장한 키워드 목록',
+    schema: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', example: '엔비디아' },
+          count: { type: 'integer', example: 15 },
+        },
+      },
+      example: [
+        { name: '엔비디아', count: 15 },
+        { name: 'AI', count: 9 },
+        { name: 'TSMC', count: 7 },
+        { name: '테슬라', count: 6 },
+        { name: 'HBM', count: 5 },
+      ],
+    },
+  })
+  @ApiUnauthorizedResponse({ description: '인증 필요' })
+  async getTopKeywords() {
+    return this.authService.getTopKeywords(5);
+  }
 }

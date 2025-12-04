@@ -302,4 +302,29 @@ export class AuthService {
       },
     };
   }
+
+  // 전체 Node 기준, 가장 많이 등장한 키워드 Top N
+  async getTopKeywords(
+    limit = 5,
+  ): Promise<Array<{ name: string; count: number }>> {
+    if (limit <= 0) {
+      throw new BadRequestException('limit must be positive');
+    }
+
+    const rows = await this.prisma.node.groupBy({
+      by: ['name'],
+      _count: { id: true }, // _all 대신 id 기준으로 개수
+      orderBy: {
+        _count: {
+          id: 'desc', // id 카운트 내림차순
+        },
+      },
+      take: limit,
+    });
+
+    return rows.map((r) => ({
+      name: r.name,
+      count: (r._count as any).id, // r._count.id 사용
+    }));
+  }
 }

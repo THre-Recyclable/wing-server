@@ -9,6 +9,9 @@ import { AuthModule } from './auth/auth.module';
 import { PrismaModule } from './prisma.module';
 import { OpenAiModule } from './openai/openai.module';
 import { KeywordsModule } from './keywords/keywords.module';
+import { FinnhubModule } from './finnhub/finnhub.module';
+import { AlphaVantageModule } from './alpha-vantage/alpha-vantage.module';
+import { AnalysisModule } from './analysis/analysis.module';
 
 @Module({
   imports: [
@@ -22,6 +25,9 @@ import { KeywordsModule } from './keywords/keywords.module';
     PrismaModule,
     OpenAiModule,
     KeywordsModule,
+    FinnhubModule,
+    AlphaVantageModule,
+    AnalysisModule,
   ],
 })
 export class AppModule {}
