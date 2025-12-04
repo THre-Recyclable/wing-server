@@ -79,7 +79,7 @@ export class AlphaVantageService {
     }));
     points.sort((a, b) => (a.date < b.date ? -1 : 1));
 
-    const lastN = 10;
+    const lastN = 30;
     return points.slice(-lastN);
   }
 
