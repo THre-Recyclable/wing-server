@@ -12,6 +12,7 @@ import { KeywordsModule } from './keywords/keywords.module';
 import { FinnhubModule } from './finnhub/finnhub.module';
 import { AlphaVantageModule } from './alpha-vantage/alpha-vantage.module';
 import { AnalysisModule } from './analysis/analysis.module';
+import { KisModule } from './kis/kis.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { AnalysisModule } from './analysis/analysis.module';
     FinnhubModule,
     AlphaVantageModule,
     AnalysisModule,
+    KisModule,
   ],
 })
 export class AppModule {}
