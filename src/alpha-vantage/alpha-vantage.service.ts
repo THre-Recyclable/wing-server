@@ -52,11 +52,11 @@ export class AlphaVantageService {
     }
   }
 
-  async getRsi(symbol: string, period = 14) {
+  async getRsi(symbol: string, period = 30) {
     const params = {
       function: 'RSI',
       symbol,
-      interval: 'weekly',
+      interval: 'daily',
       time_period: period,
       series_type: 'close',
       apikey: this.apiKey,
@@ -83,7 +83,7 @@ export class AlphaVantageService {
     return points.slice(-lastN);
   }
 
-  async getMomentum(symbol: string, period = 10) {
+  async getMomentum(symbol: string, period = 30) {
     const params = {
       function: 'MOM',
       symbol,
@@ -112,7 +112,7 @@ export class AlphaVantageService {
 
     points.sort((a, b) => (a.date < b.date ? -1 : 1));
 
-    const lastN = 10;
+    const lastN = 30;
     return points.slice(-lastN);
   }
 
@@ -150,7 +150,7 @@ export class AlphaVantageService {
     // 날짜 오름차순 정렬
     points.sort((a, b) => (a.date < b.date ? -1 : 1));
 
-    const lastN = 10;
+    const lastN = 30;
     return points.slice(-lastN);
   }
 

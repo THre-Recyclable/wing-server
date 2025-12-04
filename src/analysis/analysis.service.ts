@@ -139,7 +139,7 @@ export class AnalysisService {
   }
 
   // 2) RSI만 단독으로
-  async getRsi(symbol: string, period = 14) {
+  async getRsi(symbol: string, period = 30) {
     const s = this.normalizeSymbol(symbol);
     if (!s) {
       throw new BadRequestException('symbol is required');
@@ -149,7 +149,7 @@ export class AnalysisService {
   }
 
   // 3) Momentum(MOM)만 단독으로
-  async getMomentum(symbol: string, period = 10) {
+  async getMomentum(symbol: string, period = 30) {
     const s = this.normalizeSymbol(symbol);
     if (!s) {
       throw new BadRequestException('symbol is required');
