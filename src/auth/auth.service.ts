@@ -327,4 +327,114 @@ export class AuthService {
       count: (r._count as any).id, // r._count.id 사용
     }));
   }
+
+  /**
+   * 특정 그래프의 wing-score를 계산한다.
+   *
+   * wing-score 정의:
+   *  - sentiment_label 이 'positive' => 엣지 값 +1
+   *  - sentiment_label 이 'negative' => 엣지 값 -1
+   *  - sentiment_label 이 'neutral'  => 엣지 값  0 (계산에서 제외)
+   *
+   *  - positive/negative 엣지에 대해 가중치 w_e = (해당 엣지에 속한 뉴스 개수) / (그래프 전체 뉴스 개수)
+   *
+   *  - 최종 점수:
+   *      score_raw = ( Σ_e (edgeValue_e * w_e) ) / (전체 엣지 수)
+   *      wingScore = trunc(score_raw * 100)   // 정수부분만 (음수도 0 방향으로 절삭)
+   */
+  async getWingScoreByGraph(
+    user: string,
+    graphId: number,
+  ): Promise<{ graphId: number; wingScore: number }> {
+    const userId = (user ?? '').trim();
+    if (!userId) {
+      throw new BadRequestException('user id is required');
+    }
+    if (!graphId || graphId <= 0) {
+      throw new BadRequestException('graphId is required');
+    }
+
+    // 1) 그래프 존재 여부 검증
+    const graph = await this.prisma.graph.findFirst({
+      where: { id: graphId, userID: userId },
+      select: { id: true },
+    });
+    if (!graph) {
+      throw new BadRequestException('graph not found for this user');
+    }
+
+    // 2) 그래프의 모든 엣지 조회
+    const edges = await this.prisma.edge.findMany({
+      where: { userID: userId, graphId },
+    });
+
+    const totalEdges = edges.length;
+    if (totalEdges === 0) {
+      // 엣지가 없으면 wing-score는 0으로 간주
+      return { graphId, wingScore: 0 };
+    }
+
+    // 3) 그래프에 속한 전체 뉴스 개수
+    const totalNews = await this.prisma.news.count({
+      where: { userID: userId, graphId },
+    });
+
+    if (totalNews === 0) {
+      // 뉴스가 하나도 없으면 가중치는 모두 0이므로 wing-score = 0
+      return { graphId, wingScore: 0 };
+    }
+
+    // 4) 엣지별 뉴스 개수를 groupBy로 한 번에 가져온다
+    const newsGroups = await this.prisma.news.groupBy({
+      by: ['startPoint', 'endPoint'],
+      where: { userID: userId, graphId },
+      _count: { id: true },
+    });
+
+    // (startPoint, endPoint) -> 뉴스 개수 매핑
+    const newsCountMap = new Map<string, number>();
+    for (const g of newsGroups) {
+      const key = `${g.startPoint}::${g.endPoint}`;
+      const count = (g._count as any).id ?? g._count?.id ?? 0;
+      newsCountMap.set(key, count);
+    }
+
+    // 5) Σ_e (edgeValue * weight) 계산
+    let sum = 0;
+
+    for (const edge of edges) {
+      const label = (edge.sentiment_label ?? '').toLowerCase().trim();
+
+      let edgeValue = 0;
+      if (label === 'positive') edgeValue = 1;
+      else if (label === 'negative') edgeValue = -1;
+      else if (label === 'neutral') edgeValue = 0;
+      else edgeValue = 0; // 정의 외 값도 0 취급
+
+      // neutral 이거나 정의 안 된 값은 계산에서 제외
+      if (edgeValue === 0) {
+        continue;
+      }
+
+      const key = `${edge.startPoint}::${edge.endPoint}`;
+      const edgeNewsCount = newsCountMap.get(key) ?? 0;
+
+      if (edgeNewsCount === 0) {
+        // 뉴스가 하나도 없으면 가중치 0 → 기여도 0
+        continue;
+      }
+
+      const weight = edgeNewsCount / totalNews;
+      sum += edgeValue * weight;
+    }
+
+    // 6) 전체 엣지 수로 나누고, 100을 곱한 뒤 정수 부분만 취함
+    const rawScore = sum / totalEdges; // 보통 -1 ~ +1 범위 (실제로는 더 좁음)
+    const scaled = rawScore * 100;
+
+    // 정수로 반올림: 3.4 -> 3, 3.5 -> 4, -3.4 -> -3, -3.5 -> -4
+    const wingScore = Math.round(scaled);
+
+    return { graphId, wingScore };
+  }
 }

@@ -16,7 +16,7 @@ export class FinnhubService {
 
     this.client = axios.create({
       baseURL: 'https://finnhub.io/api/v1',
-      timeout: 5000,
+      timeout: 10000,
     });
   }
 

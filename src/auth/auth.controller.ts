@@ -41,6 +41,7 @@ import { NewsListResponseDto } from './dto/news-list-response.dto';
 import { GetNewsByGraphQueryDto } from './dto/get-news-by-graph-query.dto';
 import { GetNewsByEdgeQueryDto } from './dto/get-news-by-edge-query.dto';
 import { UpdateGraphNameDto } from './dto/update-graph-name.dto';
+import { use } from 'passport';
 
 @ApiTags('User')
 @Controller('user')
@@ -499,5 +500,43 @@ export class AuthController {
   @ApiUnauthorizedResponse({ description: '인증 필요' })
   async getTopKeywords() {
     return this.authService.getTopKeywords(5);
+  }
+
+  @Get(':graphId/wing-score')
+  @UseGuards(AuthGuard)
+  @ApiOperation({
+    summary: '특정 그래프의 wing-score(호재 강도 점수)를 계산합니다.',
+    description:
+      '그래프 내 엣지들의 sentiment_label 및 뉴스 개수를 기반으로 0~±100 범위의 wing-score를 계산합니다.',
+  })
+  @ApiOkResponse({
+    description: 'wing-score 결과',
+    schema: {
+      type: 'object',
+      properties: {
+        graphId: { type: 'integer', example: 3 },
+        wingScore: {
+          type: 'integer',
+          example: 17,
+          description:
+            '그래프의 호재 강도를 나타내는 정수 점수 (대략 -100 ~ +100)',
+        },
+      },
+      example: {
+        graphId: 3,
+        wingScore: 17,
+      },
+    },
+  })
+  @ApiUnauthorizedResponse({ description: '인증 필요' })
+  async getWingScore(
+    @Request() req,
+    @Param('graphId', ParseIntPipe) graphId: number,
+  ) {
+    const id = req?.user?.id;
+    if (typeof id !== 'string' || id.trim().length === 0) {
+      throw new UnauthorizedException('유효한 사용자 id가 필요합니다.');
+    }
+    return this.authService.getWingScoreByGraph(id, graphId);
   }
 }

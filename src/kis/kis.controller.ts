@@ -31,4 +31,51 @@ export class KisController {
   async getMockPrice(@Query('code') code: string) {
     return this.kisService.inquirePriceMock(code);
   }
+
+  // GET /kis/test/close-ma?code=005930
+  @Get('close-ma')
+  async getCloseMa(@Query('code') code: string) {
+    return this.kisService.getCloseWithMovingAveragesSeries(code);
+  }
+
+  // GET /kis/test/rsi?code=005930&period=14
+  @Get('rsi')
+  async getRsi(@Query('code') code: string, @Query('period') period?: string) {
+    const p = period ? Number(period) : 14;
+    return this.kisService.getRSISeries(code, p);
+  }
+
+  // GET /kis/test/mom?code=005930&period=14
+  @Get('mom')
+  async getMomentum(
+    @Query('code') code: string,
+    @Query('period') period?: string,
+  ) {
+    const p = period ? Number(period) : 14;
+    return this.kisService.getMomentumSeries(code, p);
+  }
+
+  @Get('stock-recommendation-period')
+  async getStockRecommendationPeriod(
+    @Query('code') code: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    return this.kisService.getStockInvestmentOpinions({
+      stockCode: code,
+      from,
+      to,
+    });
+  }
+
+  @Get('stock-recommendation')
+  async getStockRecommendation(@Query('code') code: string) {
+    return this.kisService.getStockInvestmentOpinionsLastMonth(code);
+  }
+
+  // GET /kis/test/reco?code=005930
+  @Get('reco')
+  async getReco(@Query('code') code: string) {
+    return this.kisService.summarizeStockInvestmentOpinionsLastMonth(code);
+  }
 }

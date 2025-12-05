@@ -20,12 +20,6 @@ export class AnalysisService {
     private readonly openai: OpenAI,
   ) {}
 
-  /**
-   * 특정 graphId에 대해, 해당 그래프의 키워드들을 보고
-   * - 메인 키워드가 곧 종목명이라면 그 종목 심볼
-   * - 아니면 (메인+서브 전체 기준으로) 가장 관련성 높은 종목 하나의 심볼
-   * 을 OpenAI에게 물어서 반환.
-   */
   async resolveGraphSymbol(user: string, graphId: number) {
     const userId = (user ?? '').trim();
     if (!userId) {
@@ -57,7 +51,7 @@ export class AnalysisService {
     }
 
     // 3) 메인 키워드 / 전체 키워드 정리
-    const mainNode = nodes.find((n: any) => n.kind === 'MAIN') ?? nodes[0]; // 혹시 kind가 없거나 잘못된 경우 대비
+    const mainNode = nodes.find((n: any) => n.kind === 'MAIN') ?? nodes[0];
     const mainKeyword = (mainNode.name ?? '').trim();
 
     const allKeywords = Array.from(
@@ -78,10 +72,11 @@ export class AnalysisService {
       all_keywords: allKeywords,
       instructions: [
         '1. 먼저 main_keyword가 특정 상장 기업(주식 종목명)을 직접 가리키는지 판단하라.',
-        '2. 그렇다면 해당 기업의 주식 티커(symbol)를 chosen_symbol에 넣어라. (예: "엔비디아" -> "NVDA", "테슬라" -> "TSLA")',
+        '2. 그렇다면 해당 기업의 주식 티커(symbol)를 chosen_symbol에 넣어라. (예: "엔비디아" -> "NVDA", "테슬라" -> "TSLA", "삼성전자" -> "005930" 등)',
         '3. main_keyword가 AI, 반도체, 전기차 같은 테마/산업이면, all_keywords 전체를 보고 가장 관련성이 높은 상장 기업 하나를 고르고 그 티커를 chosen_symbol에 넣어라.',
-        '4. 미국/글로벌에 상장된, 널리 알려진 티커를 우선적으로 선택하라.',
-        '5. 반드시 JSON 형식으로만 답하라.',
+        '4. 미국/글로벌에 상장된, 널리 알려진 티커를 우선적으로 선택하되, 한국 기업이 명확하면 한국 증시 종목코드를 사용할 수 있다.',
+        '5. 한국 증시에 상장된 종목이면 is_domestic를 true, 그 외(미국/유럽 등 해외 상장 주식)면 false로 설정하라.',
+        '6. 반드시 JSON 형식으로만 답하라. 예: { "chosen_symbol": "NVDA", "is_domestic": false }',
       ],
     };
 
@@ -93,7 +88,7 @@ export class AnalysisService {
         {
           role: 'system',
           content:
-            'You are a stock symbol resolver. You receive Korean or English keywords and must output the single most relevant stock ticker symbol (e.g. NVDA, TSLA). Always respond with strict JSON.',
+            'You are a stock symbol resolver. You receive Korean or English keywords and must output the single most relevant stock ticker symbol (e.g. NVDA, TSLA, 005930). Always respond with strict JSON including "chosen_symbol" and a boolean "is_domestic" which is true only if the symbol represents a stock listed on the Korean stock market (KRX, KOSPI, KOSDAQ).',
         },
         {
           role: 'user',
@@ -113,24 +108,45 @@ export class AnalysisService {
       );
     }
 
-    const symbol: string = (parsed.chosen_symbol ?? parsed.symbol ?? '')
+    // 원본 심볼 (suffix 포함일 수도 있음)
+    const rawSymbol: string = (parsed.chosen_symbol ?? parsed.symbol ?? '')
       .toString()
       .trim();
 
-    if (!symbol) {
+    if (!rawSymbol) {
       throw new InternalServerErrorException(
         'OpenAI did not return a stock symbol',
       );
+    }
+
+    // KRX 관련 suffix 제거 (.KS, .KQ, .KRX, .KOSPI, .KOSDAQ 등)
+    const krxSuffixRegex = /\.(KS|KQ|KRX|KOSPI|KOSDAQ)$/i;
+    const symbol = rawSymbol.replace(krxSuffixRegex, '');
+
+    // 6) isDomestic 계산
+    const isDomesticRaw = parsed.is_domestic ?? parsed.isDomestic;
+    let isDomestic: boolean;
+
+    if (typeof isDomesticRaw === 'boolean') {
+      // OpenAI가 명시적으로 준 값이 있으면 그걸 우선 사용
+      isDomestic = isDomesticRaw;
+    } else {
+      // 없으면 심볼 패턴으로 추론
+      const upperRaw = rawSymbol.toUpperCase();
+      const isSixDigitKr = /^[0-9]{6}$/.test(symbol); // suffix 제거된 심볼이 6자리 숫자면 KRX 코드로 판단
+      const hasKrxSuffix = krxSuffixRegex.test(upperRaw);
+
+      isDomestic = isSixDigitKr || hasKrxSuffix;
     }
 
     return {
       graphId,
       mainKeyword,
       allKeywords,
-      symbol,
+      symbol, // suffix 제거된 심볼
+      isDomestic, // 국내 여부
     };
   }
-
   /** 1) 30일 종가 + 20 / 60일 이동평균선 */
   async getPriceWithMa(symbol: string) {
     const s = this.normalizeSymbol(symbol);
@@ -187,7 +203,7 @@ export class AnalysisService {
     }
 
     const to = dayjs().format('YYYY-MM-DD');
-    const from = dayjs().subtract(30, 'day').format('YYYY-MM-DD');
+    const from = dayjs().subtract(14, 'day').format('YYYY-MM-DD');
 
     const raw = await this.finnhub.getCompanyNews(s, from, to);
 
@@ -203,6 +219,116 @@ export class AnalysisService {
     });
 
     return sorted.slice(0, 20);
+  }
+
+  /**
+   * 특정 그래프의 wing-score를 계산한다.
+   *
+   * wing-score 정의:
+   *  - sentiment_label 이 'positive' => 엣지 값 +1
+   *  - sentiment_label 이 'negative' => 엣지 값 -1
+   *  - sentiment_label 이 'neutral'  => 엣지 값  0 (계산에서 제외)
+   *
+   *  - positive/negative 엣지에 대해 가중치 w_e = (해당 엣지에 속한 뉴스 개수) / (그래프 전체 뉴스 개수)
+   *
+   *  - 최종 점수:
+   *      score_raw = ( Σ_e (edgeValue_e * w_e) ) / (전체 엣지 수)
+   *      wingScore = trunc(score_raw * 100)   // 정수부분만 (음수도 0 방향으로 절삭)
+   */
+  async getWingScoreByGraph(
+    user: string,
+    graphId: number,
+  ): Promise<{ graphId: number; wingScore: number }> {
+    const userId = (user ?? '').trim();
+    if (!userId) {
+      throw new BadRequestException('user id is required');
+    }
+    if (!graphId || graphId <= 0) {
+      throw new BadRequestException('graphId is required');
+    }
+
+    // 1) 그래프 존재 여부 검증
+    const graph = await this.prisma.graph.findFirst({
+      where: { id: graphId, userID: userId },
+      select: { id: true },
+    });
+    if (!graph) {
+      throw new BadRequestException('graph not found for this user');
+    }
+
+    // 2) 그래프의 모든 엣지 조회
+    const edges = await this.prisma.edge.findMany({
+      where: { userID: userId, graphId },
+    });
+
+    const totalEdges = edges.length;
+    if (totalEdges === 0) {
+      // 엣지가 없으면 wing-score는 0으로 간주
+      return { graphId, wingScore: 0 };
+    }
+
+    // 3) 그래프에 속한 전체 뉴스 개수
+    const totalNews = await this.prisma.news.count({
+      where: { userID: userId, graphId },
+    });
+
+    if (totalNews === 0) {
+      // 뉴스가 하나도 없으면 가중치는 모두 0이므로 wing-score = 0
+      return { graphId, wingScore: 0 };
+    }
+
+    // 4) 엣지별 뉴스 개수를 groupBy로 한 번에 가져온다
+    const newsGroups = await this.prisma.news.groupBy({
+      by: ['startPoint', 'endPoint'],
+      where: { userID: userId, graphId },
+      _count: { id: true },
+    });
+
+    // (startPoint, endPoint) -> 뉴스 개수 매핑
+    const newsCountMap = new Map<string, number>();
+    for (const g of newsGroups) {
+      const key = `${g.startPoint}::${g.endPoint}`;
+      const count = (g._count as any).id ?? g._count?.id ?? 0;
+      newsCountMap.set(key, count);
+    }
+
+    // 5) Σ_e (edgeValue * weight) 계산
+    let sum = 0;
+
+    for (const edge of edges) {
+      const label = (edge.sentiment_label ?? '').toLowerCase().trim();
+
+      let edgeValue = 0;
+      if (label === 'positive') edgeValue = 1;
+      else if (label === 'negative') edgeValue = -1;
+      else if (label === 'neutral') edgeValue = 0;
+      else edgeValue = 0; // 정의 외 값도 0 취급
+
+      // neutral 이거나 정의 안 된 값은 계산에서 제외
+      if (edgeValue === 0) {
+        continue;
+      }
+
+      const key = `${edge.startPoint}::${edge.endPoint}`;
+      const edgeNewsCount = newsCountMap.get(key) ?? 0;
+
+      if (edgeNewsCount === 0) {
+        // 뉴스가 하나도 없으면 가중치 0 → 기여도 0
+        continue;
+      }
+
+      const weight = edgeNewsCount / totalNews;
+      sum += edgeValue * weight;
+    }
+
+    // 6) 전체 엣지 수로 나누고, 100을 곱한 뒤 정수 부분만 취함
+    const rawScore = sum / totalEdges; // 보통 -1 ~ +1 범위 (실제로는 더 좁음)
+    const scaled = rawScore * 100;
+
+    // 정수로 반올림: 3.4 -> 3, 3.5 -> 4, -3.4 -> -3, -3.5 -> -4
+    const wingScore = Math.round(scaled);
+
+    return { graphId, wingScore };
   }
 
   // ----------------- 헬퍼 -----------------

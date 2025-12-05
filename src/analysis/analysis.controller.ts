@@ -19,13 +19,17 @@ import {
 } from '@nestjs/swagger';
 import { AnalysisService } from './analysis.service';
 import { AuthGuard } from 'src/auth/auth.guard';
+import { KisService } from 'src/kis/kis.service'; // KIS 서비스 주입
 
 @ApiTags('Analysis')
 @ApiBearerAuth()
 @UseGuards(AuthGuard)
 @Controller('analysis')
 export class AnalysisController {
-  constructor(private readonly analysisService: AnalysisService) {}
+  constructor(
+    private readonly analysisService: AnalysisService,
+    private readonly kisService: KisService, // 추가
+  ) {}
 
   @Get('graphs/:graphId/symbol')
   @ApiOperation({
@@ -60,17 +64,30 @@ export class AnalysisController {
     return this.analysisService.resolveGraphSymbol(id, graphId);
   }
 
+  // 내부용: isDomestic 쿼리 문자열을 boolean으로 파싱 (기본 false)
+  private parseIsDomestic(isDomestic?: string): boolean {
+    if (isDomestic == null) return false;
+    return String(isDomestic).toLowerCase() === 'true';
+  }
+
   // 1) 30일 종가 + 20/60일 이동평균선
   @Get('price-ma')
   @ApiOperation({
-    summary: '특정 종목의 30일 종가와 20/60일 이동평균선을 조회합니다.',
+    summary:
+      '특정 종목의 30일 종가와 20/60일 이동평균선을 조회합니다. (해외: AlphaVantage, 국내: KIS)',
   })
   @ApiQuery({
     name: 'symbol',
     type: String,
     required: true,
     example: 'TSLA',
-    description: '조회할 종목 심볼 (예: TSLA, NVDA, AAPL 등)',
+    description: '조회할 종목 심볼 (예: TSLA, NVDA, 005930 등)',
+  })
+  @ApiQuery({
+    name: 'isDomestic',
+    required: false,
+    example: false,
+    description: '국내 주식 여부 (true이면 KIS 사용, 기본값 false)',
   })
   @ApiOkResponse({
     description: '날짜별 종가 + 20/60일 이동평균선 배열',
@@ -108,14 +125,26 @@ export class AnalysisController {
     },
   })
   @ApiUnauthorizedResponse({ description: '인증 필요' })
-  async getPriceWithMa(@Query('symbol') symbol: string) {
+  async getPriceWithMa(
+    @Query('symbol') symbol: string,
+    @Query('isDomestic') isDomestic?: string,
+  ) {
+    const domestic = this.parseIsDomestic(isDomestic);
+
+    if (domestic) {
+      // 국내 주식: KIS 일봉 기반
+      return this.kisService.getCloseWithMovingAveragesSeries(symbol);
+    }
+
+    // 해외 주식: 기존 AlphaVantage 로직
     return this.analysisService.getPriceWithMa(symbol);
   }
 
   // 2) RSI만
   @Get('rsi')
   @ApiOperation({
-    summary: 'RSI 지표 (AlphaVantage, 기본 period=14)',
+    summary:
+      'RSI 지표 (해외: AlphaVantage, 국내: KIS 일봉 기반, 기본 period=14)',
   })
   @ApiQuery({ name: 'symbol', required: true, example: 'TSLA' })
   @ApiQuery({
@@ -123,6 +152,12 @@ export class AnalysisController {
     required: false,
     example: 14,
     description: 'RSI 계산 기간 (기본 14)',
+  })
+  @ApiQuery({
+    name: 'isDomestic',
+    required: false,
+    example: false,
+    description: '국내 주식 여부 (true이면 KIS 사용, 기본값 false)',
   })
   @ApiOkResponse({
     description: 'RSI 값 배열 (AlphaVantage가 반환한 최근 N개)',
@@ -147,14 +182,25 @@ export class AnalysisController {
   async getRsi(
     @Query('symbol') symbol: string,
     @Query('period') period = '14',
+    @Query('isDomestic') isDomestic?: string,
   ) {
-    return this.analysisService.getRsi(symbol, Number(period));
+    const domestic = this.parseIsDomestic(isDomestic);
+    const p = Number(period) || 14;
+
+    if (domestic) {
+      // 국내: KIS 일봉으로 RSI 직접 계산 (최근 1개월 시계열)
+      return this.kisService.getRSISeries(symbol, p);
+    }
+
+    // 해외: 기존 AlphaVantage
+    return this.analysisService.getRsi(symbol, p);
   }
 
   // 3) Momentum(MOM)만
   @Get('momentum')
   @ApiOperation({
-    summary: 'Momentum(MOM) 지표 (AlphaVantage, 기본 period=10)',
+    summary:
+      'Momentum(MOM) 지표 (해외: AlphaVantage, 국내: KIS 일봉 기반, 기본 period=10)',
   })
   @ApiQuery({ name: 'symbol', required: true, example: 'TSLA' })
   @ApiQuery({
@@ -162,6 +208,12 @@ export class AnalysisController {
     required: false,
     example: 10,
     description: 'MOM 계산 기간 (기본 10)',
+  })
+  @ApiQuery({
+    name: 'isDomestic',
+    required: false,
+    example: false,
+    description: '국내 주식 여부 (true이면 KIS 사용, 기본값 false)',
   })
   @ApiOkResponse({
     description: 'MOM 값 배열 (AlphaVantage가 반환한 최근 N개)',
@@ -186,20 +238,37 @@ export class AnalysisController {
   async getMomentum(
     @Query('symbol') symbol: string,
     @Query('period') period = '10',
+    @Query('isDomestic') isDomestic?: string,
   ) {
-    return this.analysisService.getMomentum(symbol, Number(period));
+    const domestic = this.parseIsDomestic(isDomestic);
+    const p = Number(period) || 10;
+
+    if (domestic) {
+      // 국내: KIS 일봉으로 모멘텀 시계열 계산
+      return this.kisService.getMomentumSeries(symbol, p);
+    }
+
+    // 해외: 기존 AlphaVantage
+    return this.analysisService.getMomentum(symbol, p);
   }
 
-  // 4) Finnhub 애널리스트 추천 트렌드
+  // 4) 애널리스트 추천 트렌드
   @Get('recommendation')
   @ApiOperation({
-    summary: 'Finnhub 애널리스트 추천 트렌드 중 가장 최신 한 건만 조회합니다.',
+    summary:
+      '애널리스트 추천 트렌드 (해외: Finnhub, 국내: KIS 종목투자의견 기반 요약)',
   })
   @ApiQuery({
     name: 'symbol',
     type: String,
     required: true,
     example: 'TSLA',
+  })
+  @ApiQuery({
+    name: 'isDomestic',
+    required: false,
+    example: false,
+    description: '국내 주식 여부 (true이면 KIS 사용, 기본값 false)',
   })
   @ApiOkResponse({
     description: '가장 최신 recommendation 레코드 1개 (없으면 null)',
@@ -227,21 +296,39 @@ export class AnalysisController {
     },
   })
   @ApiUnauthorizedResponse({ description: '인증 필요' })
-  async getRecommendation(@Query('symbol') symbol: string) {
+  async getRecommendation(
+    @Query('symbol') symbol: string,
+    @Query('isDomestic') isDomestic?: string,
+  ) {
+    const domestic = this.parseIsDomestic(isDomestic);
+
+    if (domestic) {
+      // 국내: KIS 종목투자의견(최근 1개월)을 Finnhub 포맷으로 요약
+      return this.kisService.summarizeStockInvestmentOpinionsLastMonth(symbol);
+    }
+
+    // 해외: Finnhub recommendation
     return this.analysisService.getRecommendation(symbol);
   }
 
-  // 5) Finnhub 회사 뉴스 (최근 30일)
+  // 5) 회사 뉴스 (최근 30일)
   @Get('company-news')
   @ApiOperation({
     summary:
-      'Finnhub 회사 뉴스: 최근 30일 범위에서 가장 최신 20개만 반환합니다.',
+      '회사 뉴스: 해외는 Finnhub (최근 30일), 국내는 아직 미구현이라 빈 배열 반환.',
   })
   @ApiQuery({
     name: 'symbol',
     type: String,
     required: true,
     example: 'TSLA',
+  })
+  @ApiQuery({
+    name: 'isDomestic',
+    required: false,
+    example: false,
+    description:
+      '국내 주식 여부 (true이면 KIS 뉴스 미지원으로 빈 배열, 기본값 false)',
   })
   @ApiOkResponse({
     description: '최신 회사 뉴스 최대 20개',
@@ -304,7 +391,18 @@ export class AnalysisController {
     },
   })
   @ApiUnauthorizedResponse({ description: '인증 필요' })
-  async getCompanyNews(@Query('symbol') symbol: string) {
+  async getCompanyNews(
+    @Query('symbol') symbol: string,
+    @Query('isDomestic') isDomestic?: string,
+  ) {
+    const domestic = this.parseIsDomestic(isDomestic);
+
+    if (domestic) {
+      // 국내: 빈 배열
+      return [];
+    }
+
+    // 해외: Finnhub 회사 뉴스
     return this.analysisService.getCompanyNews(symbol);
   }
 }

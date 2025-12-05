@@ -52,7 +52,7 @@ export class AlphaVantageService {
     }
   }
 
-  async getRsi(symbol: string, period = 30) {
+  async getRsi(symbol: string, period = 14) {
     const params = {
       function: 'RSI',
       symbol,
@@ -83,7 +83,7 @@ export class AlphaVantageService {
     return points.slice(-lastN);
   }
 
-  async getMomentum(symbol: string, period = 30) {
+  async getMomentum(symbol: string, period = 14) {
     const params = {
       function: 'MOM',
       symbol,
@@ -154,7 +154,7 @@ export class AlphaVantageService {
     return points.slice(-lastN);
   }
 
-  // 👉 여기 아래에 함수 추가
+  // 여기 아래에 함수 추가
   async getRecentCloses(
     symbol: string,
     n = 30,

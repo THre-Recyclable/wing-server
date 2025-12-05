@@ -5,9 +5,10 @@ import { AnalysisController } from './analysis.controller';
 import { AlphaVantageModule } from 'src/alpha-vantage/alpha-vantage.module';
 import { FinnhubModule } from 'src/finnhub/finnhub.module';
 import { OpenAiModule } from 'src/openai/openai.module';
+import { KisModule } from 'src/kis/kis.module';
 
 @Module({
-  imports: [AlphaVantageModule, FinnhubModule, OpenAiModule],
+  imports: [AlphaVantageModule, FinnhubModule, OpenAiModule, KisModule],
   providers: [AnalysisService],
   controllers: [AnalysisController],
 })
