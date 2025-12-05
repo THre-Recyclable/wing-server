@@ -41,7 +41,6 @@ import { NewsListResponseDto } from './dto/news-list-response.dto';
 import { GetNewsByGraphQueryDto } from './dto/get-news-by-graph-query.dto';
 import { GetNewsByEdgeQueryDto } from './dto/get-news-by-edge-query.dto';
 import { UpdateGraphNameDto } from './dto/update-graph-name.dto';
-import { use } from 'passport';
 
 @ApiTags('User')
 @Controller('user')
