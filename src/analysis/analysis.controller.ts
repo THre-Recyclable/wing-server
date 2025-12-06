@@ -206,8 +206,8 @@ export class AnalysisController {
   @ApiQuery({
     name: 'period',
     required: false,
-    example: 10,
-    description: 'MOM 계산 기간 (기본 10)',
+    example: 14,
+    description: 'MOM 계산 기간 (기본 14)',
   })
   @ApiQuery({
     name: 'isDomestic',
@@ -237,7 +237,7 @@ export class AnalysisController {
   @ApiUnauthorizedResponse({ description: '인증 필요' })
   async getMomentum(
     @Query('symbol') symbol: string,
-    @Query('period') period = '10',
+    @Query('period') period = '14',
     @Query('isDomestic') isDomestic?: string,
   ) {
     const domestic = this.parseIsDomestic(isDomestic);
