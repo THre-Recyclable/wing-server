@@ -217,8 +217,27 @@ export class AuthController {
     // 더 이상 전체 그래프 삭제 안 함
     // await this.crawlerService.clearUserGraph(id);
 
+    const useCache =
+      dto.useCache === undefined
+        ? true // 기본값: 캐시 사용
+        : String(dto.useCache).toLowerCase() !== 'false';
+
+    const start = Date.now();
+
     // 새 그래프 하나 생성 + 저장
-    return this.crawlerService.saveGraphForUser(dto, id);
+    const result = await this.crawlerService.saveGraphForUser(
+      dto,
+      id,
+      useCache,
+    );
+
+    const elapsedMs = Date.now() - start;
+
+    console.log(
+      `[generateTree] user=${id}, mainKeyword=${dto.mainKeyword}, useCache=${useCache}, elapsedMs=${elapsedMs}ms`,
+    );
+
+    return result;
   }
 
   @UseGuards(AuthGuard)

@@ -1,5 +1,11 @@
 // crawlers/dto/collect-news.dto.ts
-import { IsArray, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 import { Transform } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -32,4 +38,18 @@ export class CollectNewsDTO {
       .filter((v) => v.length > 0);
   })
   subKeywords: string[] = [];
+
+  @IsBoolean()
+  @IsOptional()
+  @ApiPropertyOptional({
+    description: '뉴스 크롤링 시 캐시된 결과를 사용할지 여부',
+    example: true,
+  })
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return true;
+    if (typeof value === 'boolean') return value;
+    const str = String(value).toLowerCase();
+    return str !== 'false' && str !== '0' && str !== '';
+  })
+  useCache: boolean = true;
 }

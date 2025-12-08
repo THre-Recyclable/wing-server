@@ -296,15 +296,16 @@ export class CrawlersService {
 
     return {
       link,
-      title, // ⬅️ 그대로 사용
+      title, // 그대로 사용
       pubDate,
       originallink: seed.originallink ?? null,
-      description: body, // ⬅️ 크롤링 결과
+      description: body, // 크롤링 결과
     };
   }
 
   /**
    * 여러 링크 일괄 본문 크롤링 (수집된 title을 그대로 사용)
+   * useCache = true 이면 DB 캐시를 먼저 조회하고, 없을 때만 실제 크롤링
    */
   public async enrichCollectedWithBodies(
     items: Array<{
@@ -313,19 +314,91 @@ export class CrawlersService {
       pubDate?: string;
       originallink?: string | null;
     }>,
+    useCache = true,
   ): Promise<BuiltItem[]> {
-    const tasks = items.map((it) => this.buildItemWithBodyFromDesktop(it));
-    return Promise.all(tasks);
+    // 캐시를 쓰지 않는 모드: 기존 동작 그대로
+    if (!useCache) {
+      const tasks = items.map((it) => this.buildItemWithBodyFromDesktop(it));
+      return Promise.all(tasks);
+    }
+
+    // 1) 링크 정규화
+    const normalized = items
+      .map((it) => ({
+        ...it,
+        link: (it.link ?? '').trim(),
+      }))
+      .filter((it) => it.link);
+
+    if (normalized.length === 0) return [];
+
+    const links = normalized.map((it) => it.link);
+
+    // 2) DB에서 캐시된 본문 조회
+    const cachedRows = await this.prisma.newsBodyCache.findMany({
+      where: {
+        link: { in: links },
+      },
+    });
+
+    const cacheMap = new Map(cachedRows.map((row) => [row.link, row]));
+
+    const needFetch: typeof normalized = [];
+    const builtFromCache: BuiltItem[] = [];
+
+    // 3) 캐시 있는 건 그대로 사용, 없는 건 later fetch 목록에 넣기
+    for (const seed of normalized) {
+      const cached = cacheMap.get(seed.link);
+      if (cached) {
+        builtFromCache.push({
+          link: seed.link,
+          title: seed.title,
+          originallink: seed.originallink ?? null,
+          pubDate: seed.pubDate ?? cached.pubDate ?? null,
+          description: cached.description,
+        });
+      } else {
+        needFetch.push(seed);
+      }
+    }
+
+    // 4) 캐시 없는 기사들만 실제로 크롤링 (병렬 처리)
+    let fetched: BuiltItem[] = [];
+    if (needFetch.length > 0) {
+      fetched = await Promise.all(
+        needFetch.map((seed) => this.buildItemWithBodyFromDesktop(seed)),
+      );
+
+      // 5) 새로 크롤링한 본문은 캐시에 저장
+      if (fetched.length > 0) {
+        await this.prisma.newsBodyCache.createMany({
+          data: fetched.map((b) => ({
+            link: b.link,
+            title: b.title,
+            description: b.description,
+            pubDate: b.pubDate,
+          })),
+          // 혹시 동시에 같은 링크가 들어와도 중복으로 실패하지 않게
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    const all = [...builtFromCache, ...fetched];
+
+    // 6) 결과를 원래 items 순서에 맞게 정렬해서 반환
+    const byLink = new Map(all.map((b) => [b.link, b]));
+    return normalized
+      .map((seed) => byLink.get(seed.link))
+      .filter((b): b is BuiltItem => !!b);
   }
 
-  // crawlers.service.ts 내부 어딘가(프라이빗 유틸)
   private normalizeSubKeywords(input?: string | string[]): string[] {
     if (input == null) return [];
     const arr = Array.isArray(input) ? input : String(input).split(',');
     return arr.map((v) => String(v).trim()).filter(Boolean);
   }
 
-  // 기존: (subKeywords?: string[]) -> .map()에서 크래시
   private buildQueriesFromKeywords(
     mainKeyword: string,
     subKeywords?: string | string[], // ← 시그니처 완화
@@ -338,13 +411,14 @@ export class CrawlersService {
 
   public async crawlNewsByKeywords(
     dto: CollectNewsDTO,
+    useCache = true,
   ): Promise<CrawlNewsByKeywordsResult> {
-    const subs = this.normalizeSubKeywords((dto as any).subKeywords); // ← 안전 정규화
+    const subs = this.normalizeSubKeywords((dto as any).subKeywords);
     const queries = this.buildQueriesFromKeywords(dto.mainKeyword, subs);
 
     const results: CrawlNewsSingleResult[] = [];
     for (const q of queries) {
-      const res = await this.crawlNews(q);
+      const res = await this.crawlNews(q, useCache);
       const items = (res.items ?? []) as BuiltItem[];
       results.push({
         query: q,
@@ -359,19 +433,24 @@ export class CrawlersService {
 
     return {
       mainKeyword: dto.mainKeyword,
-      subKeywords: subs, // ← 정규화된 배열을 그대로 반환
+      subKeywords: subs,
       queryCount: queries.length,
       results,
     };
   }
 
-  public async crawlNews(query: string) {
+  public async crawlNews(query: string, useCache = true) {
     console.time('naver-crawl');
     const collected = await this.collectNaverMnewsLinks(query);
     console.timeEnd('naver-crawl');
+
     console.time('parsing time');
-    const enriched = await this.enrichCollectedWithBodies(collected.items);
+    const enriched = await this.enrichCollectedWithBodies(
+      collected.items,
+      useCache,
+    );
     console.timeEnd('parsing time');
+
     return {
       ...collected,
       items: enriched,
@@ -877,6 +956,7 @@ export class CrawlersService {
   public async saveGraphForUser(
     dto: CollectNewsDTO,
     userID: string,
+    useCache = true,
   ): Promise<IngestSummary> {
     const uid = (userID ?? '').trim();
     if (!uid) throw new BadRequestException('userID is required');
@@ -900,7 +980,7 @@ export class CrawlersService {
     const graphId = graph.id;
 
     // 2) 키워드로 뉴스 크롤링
-    const newsResult = await this.crawlNewsByKeywords(dto);
+    const newsResult = await this.crawlNewsByKeywords(dto, useCache);
 
     // 2-1) 쿼리 문자열 기준 edge 통계 맵 생성
     // key: "엔비디아 젠슨 황" 같은 쿼리 문자열

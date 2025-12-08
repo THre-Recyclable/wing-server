@@ -368,8 +368,7 @@ export class AuthService {
       where: { userID: userId, graphId },
     });
 
-    const totalEdges = edges.length;
-    if (totalEdges === 0) {
+    if (edges.length === 0) {
       // 엣지가 없으면 wing-score는 0으로 간주
       return { graphId, wingScore: 0 };
     }
@@ -399,20 +398,18 @@ export class AuthService {
       newsCountMap.set(key, count);
     }
 
-    // 5) Σ_e (edgeValue * weight) 계산
+    // 5) Σ_e (signedSentiment * newsWeight) 계산
     let sum = 0;
 
     for (const edge of edges) {
       const label = (edge.sentiment_label ?? '').toLowerCase().trim();
 
-      let edgeValue = 0;
-      if (label === 'positive') edgeValue = 1;
-      else if (label === 'negative') edgeValue = -1;
-      else if (label === 'neutral') edgeValue = 0;
-      else edgeValue = 0; // 정의 외 값도 0 취급
-
-      // neutral 이거나 정의 안 된 값은 계산에서 제외
-      if (edgeValue === 0) {
+      // label로 부호 결정
+      let sign = 0;
+      if (label === 'positive') sign = 1;
+      else if (label === 'negative') sign = -1;
+      else {
+        // neutral/기타 → 기여도 0
         continue;
       }
 
@@ -424,16 +421,31 @@ export class AuthService {
         continue;
       }
 
-      const weight = edgeNewsCount / totalNews;
-      sum += edgeValue * weight;
+      // sentiment_score를 강도(magnitude)로 사용
+      let magnitude = Math.abs(Number(edge.sentiment_score ?? 0));
+      if (!Number.isFinite(magnitude) || magnitude === 0) {
+        // 스코어가 없거나 0이면 단순히 label만 반영(강도 1)
+        magnitude = 1;
+      }
+      if (magnitude > 1) {
+        // 혹시 1보다 큰 값이 들어오면 1로 클램프
+        magnitude = 1;
+      }
+
+      // 전체 뉴스 중 이 엣지가 차지하는 비율
+      const newsWeight = edgeNewsCount / totalNews;
+
+      // 이 엣지의 signed contribution
+      const signedSentiment = sign * magnitude;
+      sum += signedSentiment * newsWeight;
     }
 
-    // 6) 전체 엣지 수로 나누고, 100을 곱한 뒤 정수 부분만 취함
-    const rawScore = sum / totalEdges; // 보통 -1 ~ +1 범위 (실제로는 더 좁음)
+    // 6) sum은 대략 -1 ~ +1 범위 → -100 ~ +100으로 스케일
+    const rawScore = sum;
     const scaled = rawScore * 100;
 
-    // 정수로 반올림: 3.4 -> 3, 3.5 -> 4, -3.4 -> -3, -3.5 -> -4
-    const wingScore = Math.round(scaled);
+    // -100 ~ 100 사이로 클램프 후 정수 반올림
+    const wingScore = Math.round(Math.max(-100, Math.min(100, scaled)));
 
     return { graphId, wingScore };
   }
