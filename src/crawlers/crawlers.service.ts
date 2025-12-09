@@ -216,22 +216,39 @@ export class CrawlersService {
   }
 
   private async fetchHtmlDesktop(url: string): Promise<string> {
-    const res$ = this.http.get(url, {
-      headers: {
-        // 데스크톱 UA를 명시적으로 보냄
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
-        'Accept-Language': 'ko,en;q=0.8',
-      },
-      timeout: 60_000,
-      maxRedirects: 20,
-      // 네이버는 gzip/deflate 기본 지원
-    });
-    const { data } = await lastValueFrom(res$);
-    if (typeof data !== 'string') {
-      throw new InternalServerErrorException('HTML 응답이 올바르지 않습니다.');
+    try {
+      const res$ = this.http.get(url, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+          'Accept-Language': 'ko,en;q=0.8',
+        },
+        timeout: 30000,
+        maxRedirects: 20,
+      });
+
+      const { data } = await lastValueFrom(res$);
+      if (typeof data !== 'string') {
+        throw new InternalServerErrorException(
+          'HTML 응답이 올바르지 않습니다.',
+        );
+      }
+      return data;
+    } catch (e) {
+      const err = e as AxiosError;
+
+      console.error('NAVER HTML fetch error >>>', {
+        message: err.message,
+        code: err.code,
+        status: err.response?.status,
+        statusText: err.response?.statusText,
+        data: err.response?.data,
+      });
+
+      throw new InternalServerErrorException(
+        `NAVER 기사 본문 요청 실패(${err.code ?? err.response?.status ?? 'unknown'})`,
+      );
     }
-    return data;
   }
 
   private parseBodyDesktop($: cheerio.CheerioAPI): string {
