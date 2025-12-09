@@ -383,7 +383,37 @@ export class AuthService {
       return { graphId, wingScore: 0 };
     }
 
-    // 4) 엣지별 뉴스 개수를 groupBy로 한 번에 가져온다
+    // 4) 그래프에 속한 노드 조회 → 그래프 품질(graphWeight) 계산용
+    const nodes = await this.prisma.node.findMany({
+      where: { userID: userId, graphId },
+    });
+
+    let graphWeight = 1; // 0~1 사이
+    if (nodes.length === 0) {
+      graphWeight = 0.5;
+    } else {
+      const weights = nodes.map((n) => Number(n.weight ?? 0));
+      const maxWeight = Math.max(...weights);
+      if (maxWeight > 0) {
+        const avgNorm =
+          weights.reduce((acc, w) => acc + w / maxWeight, 0) / nodes.length;
+        graphWeight = avgNorm; // 0~1
+      } else {
+        graphWeight = 0.5;
+      }
+    }
+
+    // 5) 그래프의 "뉴스 볼륨" 기반 신뢰도 (노드 수 * 70 기준)
+    //    노드가 많을수록, 충분히 신뢰하려면 더 많은 뉴스가 필요하다는 의미
+    const MAX_NEWS = Math.max(1, nodes.length * 100); // 최소 1 방어
+    const VOLUME_EXP = 2.0; // 2 이상이면 적은 뉴스일 때 영향 더 작게
+
+    // 0~1로 정규화
+    const volumeNorm = Math.min(1, totalNews / MAX_NEWS); // 0~1
+    // 지수 적용: 뉴스가 적으면 훨씬 작아지고, 많으면 1에 가깝게
+    const volumeFactor = Math.pow(volumeNorm, VOLUME_EXP); // 여전히 0~1
+
+    // 6) 엣지별 뉴스 개수를 groupBy로 한 번에 가져온다
     const newsGroups = await this.prisma.news.groupBy({
       by: ['startPoint', 'endPoint'],
       where: { userID: userId, graphId },
@@ -398,7 +428,7 @@ export class AuthService {
       newsCountMap.set(key, count);
     }
 
-    // 5) Σ_e (signedSentiment * newsWeight) 계산
+    // 7) Σ_e (signedSentiment * newsWeight) 계산
     let sum = 0;
 
     for (const edge of edges) {
@@ -424,27 +454,40 @@ export class AuthService {
       // sentiment_score를 강도(magnitude)로 사용
       let magnitude = Math.abs(Number(edge.sentiment_score ?? 0));
       if (!Number.isFinite(magnitude) || magnitude === 0) {
-        // 스코어가 없거나 0이면 단순히 label만 반영(강도 1)
         magnitude = 1;
       }
       if (magnitude > 1) {
-        // 혹시 1보다 큰 값이 들어오면 1로 클램프
         magnitude = 1;
       }
 
       // 전체 뉴스 중 이 엣지가 차지하는 비율
-      const newsWeight = edgeNewsCount / totalNews;
+      const newsWeight = edgeNewsCount / totalNews; // 0~1 (Σ newsWeight ≈ 1)
 
       // 이 엣지의 signed contribution
-      const signedSentiment = sign * magnitude;
+      const signedSentiment = sign * magnitude; // -1 ~ +1
       sum += signedSentiment * newsWeight;
     }
 
-    // 6) sum은 대략 -1 ~ +1 범위 → -100 ~ +100으로 스케일
-    const rawScore = sum;
+    // 8) 엣지 점수 분포 늘리기 (EDGE_SCALE)
+    const EDGE_SCALE = 2.5;
+    let baseScore = sum * EDGE_SCALE;
+
+    if (baseScore > 1) baseScore = 1;
+    if (baseScore < -1) baseScore = -1;
+
+    // 9) 그래프 신뢰도 (노드 품질 + 뉴스 볼륨)
+    const MIN_CONFIDENCE = 0.3; // 너무 0에 붙지 않게 하되, 볼륨 영향은 살리기
+    const combinedReliability = graphWeight * volumeFactor; // 0~1
+
+    const confidence =
+      MIN_CONFIDENCE + (1 - MIN_CONFIDENCE) * combinedReliability;
+    // volumeFactor가 작을수록 confidence는 MIN_CONFIDENCE에 가까움
+    // volumeFactor가 크고 graphWeight도 크면 confidence가 1에 가까워짐
+
+    // 10) 최종 점수
+    const rawScore = baseScore * confidence;
     const scaled = rawScore * 100;
 
-    // -100 ~ 100 사이로 클램프 후 정수 반올림
     const wingScore = Math.round(Math.max(-100, Math.min(100, scaled)));
 
     return { graphId, wingScore };
