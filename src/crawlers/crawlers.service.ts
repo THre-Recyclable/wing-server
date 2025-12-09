@@ -215,39 +215,33 @@ export class CrawlersService {
     };
   }
 
-  private async fetchHtmlDesktop(url: string): Promise<string> {
+  private async fetchHtmlDesktop(url: string, attempt = 1): Promise<string> {
     try {
       const res$ = this.http.get(url, {
         headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 ...',
           'Accept-Language': 'ko,en;q=0.8',
         },
-        timeout: 30000,
-        maxRedirects: 20,
+        timeout: 10000, // 10초
+        maxRedirects: 5,
       });
-
       const { data } = await lastValueFrom(res$);
       if (typeof data !== 'string') {
-        throw new InternalServerErrorException(
-          'HTML 응답이 올바르지 않습니다.',
-        );
+        throw new InternalServerErrorException('HTML 응답이 문자열이 아님');
       }
       return data;
-    } catch (e) {
-      const err = e as AxiosError;
-
+    } catch (e: any) {
+      if (e.code === 'ECONNABORTED' && attempt < 3) {
+        console.warn(`NAVER HTML timeout, retrying... (${attempt})`, url);
+        await new Promise((r) => setTimeout(r, 500 * attempt));
+        return this.fetchHtmlDesktop(url, attempt + 1);
+      }
       console.error('NAVER HTML fetch error >>>', {
-        message: err.message,
-        code: err.code,
-        status: err.response?.status,
-        statusText: err.response?.statusText,
-        data: err.response?.data,
+        message: e.message,
+        code: e.code,
+        status: e.response?.status,
       });
-
-      throw new InternalServerErrorException(
-        `NAVER 기사 본문 요청 실패(${err.code ?? err.response?.status ?? 'unknown'})`,
-      );
+      throw new InternalServerErrorException('NAVER 기사 본문 요청 실패');
     }
   }
 
@@ -320,10 +314,6 @@ export class CrawlersService {
     };
   }
 
-  /**
-   * 여러 링크 일괄 본문 크롤링 (수집된 title을 그대로 사용)
-   * useCache = true 이면 DB 캐시를 먼저 조회하고, 없을 때만 실제 크롤링
-   */
   public async enrichCollectedWithBodies(
     items: Array<{
       link: string;
@@ -333,13 +323,7 @@ export class CrawlersService {
     }>,
     useCache = true,
   ): Promise<BuiltItem[]> {
-    // 캐시를 쓰지 않는 모드: 기존 동작 그대로
-    if (!useCache) {
-      const tasks = items.map((it) => this.buildItemWithBodyFromDesktop(it));
-      return Promise.all(tasks);
-    }
-
-    // 1) 링크 정규화
+    // 0) 링크 정규화
     const normalized = items
       .map((it) => ({
         ...it,
@@ -349,9 +333,22 @@ export class CrawlersService {
 
     if (normalized.length === 0) return [];
 
+    // 캐시를 전혀 쓰지 않는 모드면, 그냥 전체를 한 번에 크롤링하되
+    // 동시성 제한 + 개별 실패 스킵 로직만 적용
+    if (!useCache) {
+      const fetched = await this.fetchBodiesWithConcurrency(normalized);
+      // 원래 순서 유지
+      const byLink = new Map(fetched.map((b) => [b.link, b]));
+      return normalized
+        .map((seed) => byLink.get(seed.link))
+        .filter((b): b is BuiltItem => !!b);
+    }
+
+    // ===== 여기부터는 캐시 사용하는 모드 =====
+
     const links = normalized.map((it) => it.link);
 
-    // 2) DB에서 캐시된 본문 조회
+    // 1) DB에서 캐시된 본문 조회
     const cachedRows = await this.prisma.newsBodyCache.findMany({
       where: {
         link: { in: links },
@@ -363,7 +360,7 @@ export class CrawlersService {
     const needFetch: typeof normalized = [];
     const builtFromCache: BuiltItem[] = [];
 
-    // 3) 캐시 있는 건 그대로 사용, 없는 건 later fetch 목록에 넣기
+    // 2) 캐시 있는 건 그대로 사용, 없는 건 later fetch 목록에 넣기
     for (const seed of normalized) {
       const cached = cacheMap.get(seed.link);
       if (cached) {
@@ -371,43 +368,85 @@ export class CrawlersService {
           link: seed.link,
           title: seed.title,
           originallink: seed.originallink ?? null,
-          pubDate: seed.pubDate ?? cached.pubDate ?? null,
-          description: cached.description,
+          pubDate: seed.pubDate ?? (cached as any).pubDate ?? null,
+          description: (cached as any).description,
         });
       } else {
         needFetch.push(seed);
       }
     }
 
-    // 4) 캐시 없는 기사들만 실제로 크롤링 (병렬 처리)
+    // 3) 캐시 없는 기사들만 실제로 크롤링 (동시성 제한 + 실패 스킵)
     let fetched: BuiltItem[] = [];
     if (needFetch.length > 0) {
-      fetched = await Promise.all(
-        needFetch.map((seed) => this.buildItemWithBodyFromDesktop(seed)),
-      );
+      fetched = await this.fetchBodiesWithConcurrency(needFetch);
 
-      // 5) 새로 크롤링한 본문은 캐시에 저장
+      // 4) 새로 크롤링한 본문은 캐시에 저장
       if (fetched.length > 0) {
         await this.prisma.newsBodyCache.createMany({
           data: fetched.map((b) => ({
             link: b.link,
             title: b.title,
             description: b.description,
-            pubDate: b.pubDate,
+            pubDate: b.pubDate as any, // 스키마 타입에 맞게 필요시 new Date(...) 로 변환
           })),
-          // 혹시 동시에 같은 링크가 들어와도 중복으로 실패하지 않게
-          skipDuplicates: true,
+          skipDuplicates: true, // 중복으로 실패하지 않게
         });
       }
     }
 
     const all = [...builtFromCache, ...fetched];
 
-    // 6) 결과를 원래 items 순서에 맞게 정렬해서 반환
+    // 5) 결과를 원래 items 순서에 맞게 정렬해서 반환
     const byLink = new Map(all.map((b) => [b.link, b]));
     return normalized
       .map((seed) => byLink.get(seed.link))
       .filter((b): b is BuiltItem => !!b);
+  }
+
+  /**
+   * 네이버 기사 본문을 가져올 때,
+   * - 동시 요청 수를 제한하고
+   * - 개별 실패는 스킵하는 헬퍼
+   */
+  private async fetchBodiesWithConcurrency(
+    seeds: Array<{
+      link: string;
+      title: string;
+      pubDate?: string;
+      originallink?: string | null;
+    }>,
+  ): Promise<BuiltItem[]> {
+    const results: BuiltItem[] = [];
+
+    // 프로덕션에서는 동시성 낮게, 로컬에서는 좀 더 높게
+    const CONCURRENCY = process.env.NODE_ENV === 'production' ? 3 : 8;
+
+    let i = 0;
+    while (i < seeds.length) {
+      const batch = seeds.slice(i, i + CONCURRENCY);
+
+      const batchResults = await Promise.all(
+        batch.map(async (seed) => {
+          try {
+            return await this.buildItemWithBodyFromDesktop(seed);
+          } catch (e: any) {
+            console.warn(
+              'NAVER article body fetch failed (skip):',
+              seed.link,
+              e?.message ?? e,
+            );
+            return null;
+          }
+        }),
+      );
+
+      results.push(...batchResults.filter((b): b is BuiltItem => b !== null));
+
+      i += CONCURRENCY;
+    }
+
+    return results;
   }
 
   private normalizeSubKeywords(input?: string | string[]): string[] {
