@@ -223,8 +223,8 @@ export class CrawlersService {
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
         'Accept-Language': 'ko,en;q=0.8',
       },
-      timeout: 12_000,
-      maxRedirects: 5,
+      timeout: 60_000,
+      maxRedirects: 20,
       // 네이버는 gzip/deflate 기본 지원
     });
     const { data } = await lastValueFrom(res$);
