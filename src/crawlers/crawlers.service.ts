@@ -336,6 +336,10 @@ export class CrawlersService {
     // 캐시를 전혀 쓰지 않는 모드면, 그냥 전체를 한 번에 크롤링하되
     // 동시성 제한 + 개별 실패 스킵 로직만 적용
     if (!useCache) {
+      console.log(
+        `[NEWS CACHE] useCache=false, total=${normalized.length} (no cache lookup)`,
+      );
+
       const fetched = await this.fetchBodiesWithConcurrency(normalized);
       // 원래 순서 유지
       const byLink = new Map(fetched.map((b) => [b.link, b]));
@@ -374,6 +378,20 @@ export class CrawlersService {
       } else {
         needFetch.push(seed);
       }
+    }
+
+    // 🔎 여기서 캐시 히트율 로깅
+    {
+      const total = normalized.length;
+      const hit = builtFromCache.length;
+      const miss = needFetch.length;
+      const hitRate = total > 0 ? hit / total : 0;
+
+      console.log(
+        `[NEWS CACHE] useCache=true total=${total}, hit=${hit}, miss=${miss}, hitRate=${(
+          hitRate * 100
+        ).toFixed(1)}%`,
+      );
     }
 
     // 3) 캐시 없는 기사들만 실제로 크롤링 (동시성 제한 + 실패 스킵)

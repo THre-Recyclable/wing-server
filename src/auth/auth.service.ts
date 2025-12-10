@@ -476,7 +476,7 @@ export class AuthService {
     if (baseScore < -1) baseScore = -1;
 
     // 9) 그래프 신뢰도 (노드 품질 + 뉴스 볼륨)
-    const MIN_CONFIDENCE = 0.3; // 너무 0에 붙지 않게 하되, 볼륨 영향은 살리기
+    const MIN_CONFIDENCE = 0.15; // 너무 0에 붙지 않게 하되, 볼륨 영향은 살리기
     const combinedReliability = graphWeight * volumeFactor; // 0~1
 
     const confidence =
