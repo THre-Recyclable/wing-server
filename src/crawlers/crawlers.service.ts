@@ -438,7 +438,7 @@ export class CrawlersService {
     const results: BuiltItem[] = [];
 
     // 프로덕션에서는 동시성 낮게, 로컬에서는 좀 더 높게
-    const CONCURRENCY = process.env.NODE_ENV === 'production' ? 3 : 8;
+    const CONCURRENCY = process.env.NODE_ENV === 'production' ? 12 : 16;
 
     let i = 0;
     while (i < seeds.length) {
