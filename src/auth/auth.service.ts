@@ -328,20 +328,6 @@ export class AuthService {
     }));
   }
 
-  /**
-   * 특정 그래프의 wing-score를 계산한다.
-   *
-   * wing-score 정의:
-   *  - sentiment_label 이 'positive' => 엣지 값 +1
-   *  - sentiment_label 이 'negative' => 엣지 값 -1
-   *  - sentiment_label 이 'neutral'  => 엣지 값  0 (계산에서 제외)
-   *
-   *  - positive/negative 엣지에 대해 가중치 w_e = (해당 엣지에 속한 뉴스 개수) / (그래프 전체 뉴스 개수)
-   *
-   *  - 최종 점수:
-   *      score_raw = ( Σ_e (edgeValue_e * w_e) ) / (전체 엣지 수)
-   *      wingScore = trunc(score_raw * 100)   // 정수부분만 (음수도 0 방향으로 절삭)
-   */
   async getWingScoreByGraph(
     user: string,
     graphId: number,
