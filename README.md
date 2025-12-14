@@ -1,6 +1,6 @@
 # wing-server
 
-뉴스 기반 **키워드 그래프(Node/Edge/News)**와 투자 지표(**RSI / MOM / MA**)를 결합해, 이슈의 방향성과 강도를 **WING-Score(-100 ~ +100)**로 요약해 제공하는 NestJS 백엔드입니다.
+뉴스 기반 키워드 그래프(Node/Edge/News)와 투자 지표(RSI / MOM / MA)를 결합해, 이슈의 방향성과 강도를 WING-Score(-100 ~ +100)로 요약해 제공하는 NestJS 백엔드입니다.
 
 ## What it does
 - 메인 키워드 입력 → 네이버 뉴스 크롤링 → (별도) AI 분석 결과를 그래프로 변환 → 사용자 단위 저장
